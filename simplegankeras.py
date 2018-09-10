@@ -40,10 +40,11 @@ n_filters_d=32
 n_filters_g=32
 val_ratio=0.2
 init_lr=2e-4
-nb_epoch=100
+nb_epoch=50000
 alpha_recip=0.1
 model_out_dir='weights/'
 smooth=1
+input_training_dir='/home/gajs/Downloads/Sibaji/OAI_iMorphicsSegmentation/train_all/'
 #################################################
 def discriminator_image(img_size, n_filters, init_lr, name='d'):
     """
@@ -272,7 +273,7 @@ def print_metrics(itr, **kargs):
     print ("")
     sys.stdout.flush()
 
-def threshold_by_otsu(pred_vessels,  flatten=True):
+def threshold_by_otsu(pred_vessels,  flatten=False):
 
     # cut by otsu threshold
     #threshold=filters.threshold_otsu(pred_vessels)
@@ -521,11 +522,9 @@ gan=GAN(g,d,img_size, n_filters_g, n_filters_d,alpha_recip, init_lr)
 #d.summary()
 #gan.summary()
 
-input_training_dir='/home/gajs/Downloads/Sibaji/OAI_iMorphicsSegmentation/train_all/'
-
 # start training data load
 total_id,total_mask_id=get_train_file_names(input_training_dir)
-total_id=total_id[:160]
+#total_id=total_id[:160]
 print(len(total_id))
 
 total_id,total_mask_id=remove_balck_mask(total_id,total_mask_id)
@@ -551,12 +550,7 @@ val_id=train_id_temp[label:]
 print(len(train_id))
 print(len(val_id))
 print(len(test_id))
-with open('test_id.txt', 'w') as filehandle:
-    for listitem in test_id:
-        filehandle.write('%s\n' % listitem)
-with open('val_id.txt', 'w') as filehandle:
-    for listitem in val_id:
-        filehandle.write('%s\n' % listitem)
+
 
 print('-'*30)
 print('Fitting model...')
@@ -566,7 +560,7 @@ print('-'*30)
 #          callbacks=[model_checkpoint])
 best_acc=0
 
-for n_round in range(nb_epoch):
+for n_round in range(nb_epoch+1):
 
     # train D
     make_trainable(d, True)
@@ -576,7 +570,11 @@ for n_round in range(nb_epoch):
         real_imgs, real_mask = get_data_random_batch(train_id,batch_size)
         d_x_batch, d_y_batch = input2discriminator(real_imgs, real_mask, g.predict(real_imgs), d_out_shape)
         loss, acc = d.train_on_batch(d_x_batch, d_y_batch)
-        print_metrics(n_round+1, loss=loss, acc=acc, type='D')
+        print_metrics(n_round+1, train_loss=loss, train_acc=acc, type='D')
+        del d_x_batch
+        del d_y_batch
+        del real_imgs
+        del real_mask
 
     # train G (freeze discriminator)
     make_trainable(d, False)
@@ -585,56 +583,93 @@ for n_round in range(nb_epoch):
         real_imgs, real_mask = get_data_random_batch(train_id,batch_size)
         g_x_batch, g_y_batch=input2gan(real_imgs, real_mask, d_out_shape)
         loss, acc = gan.train_on_batch(g_x_batch, g_y_batch)
-        print_metrics(n_round+1, loss=loss, acc=acc, type='GAN')
-    if n_round%10 ==0:
-        dice_coeff_total=[]
-        d_loss=[]
-        g_loss=[]
+        print_metrics(n_round+1, train_loss=loss, train_acc=acc, type='GAN')
+        del g_x_batch
+        del g_y_batch
+        del real_imgs
+        del real_mask
+    if n_round%100 ==0: #goes for validation
+        dice_coeff_total=0
+        d_loss=0
+        g_loss=0
         for i in range(0,len(val_id),batch_size):
             batch_id=train_id[i:min(i+batch_size,len(val_id))]
             real_imgs, real_mask = get_data_batch(batch_id)
+            #print(real_imgs.shape)
+            #print(real_mask.shape)
             pred_mask=g.predict(real_imgs)
             d_x_test, d_y_test=input2discriminator(real_imgs, real_mask, pred_mask, d_out_shape)
             loss, acc=d.evaluate(d_x_test,d_y_test, batch_size=batch_size, verbose=0)
-            d_loss.append(loss)
-            #print_metrics(n_round+1, Val_loss=loss, Val_acc=acc, type='D')
+            #d_loss.append(loss)
+            d_loss=d_loss+loss
+            del d_x_test
+            del d_y_test
+            #print_metrics(i , Val_loss=loss, Val_acc=acc, type='D')
             # G
             gan_x_test, gan_y_test=input2gan(real_imgs, real_mask, d_out_shape)
             loss,acc=gan.evaluate(gan_x_test,gan_y_test, batch_size=batch_size, verbose=0)
-            g_loss.append(loss)
-            #print_metrics(n_round+1, Val_loss=loss, Val_acc=acc,  type='GAN')
-            dice_coeff=dice_coef(real_mask, pred_mask)
-            #print(K.eval(dice_coeff))
-            dice_coeff_total.append(K.eval(dice_coeff))
+            #g_loss.append(loss)
+            g_loss=g_loss+loss
+            #print_metrics(i, Val_loss=loss, Val_acc=acc,  type='GAN')
+            #dice_coeff1=K.eval(dice_coef(real_mask, pred_mask))
+            dice_coeff1=(np.sum(pred_mask*real_mask)*2.0 +1.0)/ (np.sum(pred_mask) + np.sum(real_mask)+1)
+            dice_coeff_total=dice_coeff_total+dice_coeff1
+            #print('dice_coeff %f'%dice_coeff1)
+            #dice_coeff_total.append(dice_coeff1)
+            #dice_coeff_total=dice_coeff_total+dice_coeff1
+            del gan_x_test
+            del gan_y_test
+            del real_imgs
+            del real_mask
 
-        print_metrics(n_round+1, Val_loss=np.mean(d_loss),  type='D')
-        print_metrics(n_round+1, Val_loss=np.mean(g_loss),  type='D')
-        print_metrics(n_round+1, dice_coeff_total=np.sum(dice_coeff_total), dice_coeff_mean=np.mean(dice_coeff_total))
+        i=i/10
+        #print_metrics(n_round+1, Val_loss=np.mean(d_loss),  type='D')
+        #print_metrics(n_round+1, Val_loss=np.mean(g_loss),  type='D')
+        #print_metrics(n_round+1, dice_coeff_total=np.sum(dice_coeff_total), dice_coeff_mean=np.mean(dice_coeff_total))
+        print_metrics(n_round+1, Val_loss=d_loss/i,  type='D')
+        print_metrics(n_round+1, Val_loss=g_loss/i,  type='GAN')
+        print_metrics(n_round+1, dice_coeff_total=dice_coeff_total, dice_coeff_mean=dice_coeff_total/i)
             # save the weights
             #g.save_weights(os.path.join(model_out_dir,"g_{}_{}_{}.h5".format(n_round,discriminator,ratio_gan2seg)))
-        if best_acc < np.sum(dice_coeff_total) :
+        dice_coeff_mean=dice_coeff_total/i
+        if best_acc < dice_coeff_mean :
             print('Save Model')
-            g.save_weights(os.path.join(model_out_dir,"g_{}_{:.3f}.h5".format(n_round,np.mean(dice_coeff_total))))
-
-'''
-for s in range(nb_epoch):
-    train_loss=[]
-    for current_batch_index in range(0,len(train_id),batch_size):
-        current_batch  = train_id[current_batch_index:min(len(train_id),current_batch_index+batch_size)]
-        current_label = imgs_mask_train[current_batch_index:min(imgs_mask_train.shape[0],current_batch_index+batch_size)]
-        loss=d.train_on_batch(current_batch,current_label)
-        #print('iter %d loss:%f'%(current_batch_index,loss))
-        train_loss.append(loss)
-    print(' Iter: ',s, " Train loss:  %.3f"% np.sum(train_loss))
-    imgs_train,imgs_mask_train=shuffle(imgs_train,imgs_mask_train)
-    train_loss=[]
-    for current_batch_index in range(0,imgs_val.shape[0],batch_size):
-        current_batch  = imgs_val[current_batch_index:min(imgs_val.shape[0],current_batch_index+batch_size),:,:,:]
-        current_label = imgs_mask_val[current_batch_index:min(imgs_mask_val.shape[0],current_batch_index+batch_size)]
-        loss=d.test_on_batch(current_batch,current_label)
-        #print('iter %d loss:%f'%(current_batch_index,loss))
-        train_loss.append(loss)
-    print(' Iter: ', s, " Val loss:  %.3f"% np.sum(train_loss))
-    if (best_acc>np.mean(train_loss)):
-        d.save('weights1.h5')  # creates a HDF5 file 'my_model.h5'
-        best_acc=np.mean(train_loss)'''
+            best_acc=dice_coeff_mean
+            g.save_weights(os.path.join(model_out_dir,"g_{}_{:.3f}.h5".format(n_round,dice_coeff_mean)))
+            if (best_acc > .7):
+                dice_coeff_total=0
+                d_loss=0
+                g_loss=0
+                for i in range(0,len(test_id),batch_size):
+                    batch_id=train_id[i:min(i+batch_size,len(test_id))]
+                    real_imgs, real_mask = get_data_batch(batch_id)
+                    #print(real_imgs.shape)
+                    #print(real_mask.shape)
+                    pred_mask=g.predict(real_imgs)
+                    d_x_test, d_y_test=input2discriminator(real_imgs, real_mask, pred_mask, d_out_shape)
+                    loss, acc=d.evaluate(d_x_test,d_y_test, batch_size=batch_size, verbose=0)
+                    #d_loss.append(loss)
+                    d_loss=d_loss+loss
+                    del d_x_test
+                    del d_y_test
+                    #print_metrics(i , Val_loss=loss, Val_acc=acc, type='D')
+                    # G
+                    gan_x_test, gan_y_test=input2gan(real_imgs, real_mask, d_out_shape)
+                    loss,acc=gan.evaluate(gan_x_test,gan_y_test, batch_size=batch_size, verbose=0)
+                    #g_loss.append(loss)
+                    g_loss=g_loss+loss
+                    #print_metrics(i, Val_loss=loss, Val_acc=acc,  type='GAN')
+                    #dice_coeff1=K.eval(dice_coef(real_mask, pred_mask))
+                    dice_coeff1=(np.sum(pred_mask*real_mask)*2.0 +1.e-10)/ (np.sum(pred_mask) + np.sum(real_mask)+1.e-10)
+                    dice_coeff_total=dice_coeff_total+dice_coeff1
+                    #print('dice_coeff %f'%dice_coeff1)
+                    #dice_coeff_total.append(dice_coeff1)
+                    #dice_coeff_total=dice_coeff_total+dice_coeff1
+                    del gan_x_test
+                    del gan_y_test
+                    del real_imgs
+                    del real_mask
+                i=i/10
+                print_metrics(n_round+1, test_loss=d_loss/i,  type='D')
+                print_metrics(n_round+1, test_loss=g_loss/i,  type='GAN')
+                print_metrics(n_round+1, dice_coeff_total=dice_coeff_total, dice_coeff_mean=dice_coeff_total/i)
